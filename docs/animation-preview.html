@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Face unlock animation preview</title>
+<style>
+  :root { color-scheme: dark; --accent: #4c8dff; --highlight: #a7c7ff; --success: #34c759; --error: #ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0d1117; color: #e6edf3;
+         font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { width: min(92vw, 620px); padding: 28px; }
+  h1 { margin: 0 0 4px; font-size: 20px; }
+  p.sub { margin: 0 0 20px; color: #8b949e; }
+  .stage { display: grid; place-items: center; border-radius: 24px; background: #161b22; padding: 16px; }
+  canvas { width: min(84vw, 360px); height: min(84vw, 360px); touch-action: none; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 18px; }
+  select, input[type=range] { accent-color: var(--accent); }
+  select, button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 8px;
+                   padding: 8px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  label { color: #8b949e; }
+  .note { margin-top: 16px; color: #8b949e; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Face capture animation</h1>
+  <p class="sub">Same canvas primitives as <code>FaceUnlockAnimationView</code> in the app.</p>
+  <div class="stage"><canvas id="c" width="720" height="720"></canvas></div>
+  <div class="controls">
+    <label for="style">Style</label>
+    <select id="style"><option value="ios">iOS Face ID</option><option value="hyperos">HyperOS rings</option></select>
+    <label for="progress">Progress</label>
+    <input id="progress" type="range" min="0" max="100" value="0">
+    <button id="scan">Scan</button><button id="success">Success</button>
+    <button id="error">Error</button><button id="reset">Reset</button>
+  </div>
+  <p class="note">The live app version follows the system accent color and pauses when the screen is off.</p>
+</main>
+<script>
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+const S = canvas.width / 360;
+const css = getComputedStyle(document.documentElement);
+const accent = css.getPropertyValue('--accent').trim();
+const highlight = css.getPropertyValue('--highlight').trim();
+const successColor = css.getPropertyValue('--success').trim();
+const errorColor = css.getPropertyValue('--error').trim();
+let style = 'ios', state = 'scanning', progress = 0, shown = 0, phase = 0, successP = 0, errorP = 0;
+let last = performance.now();
+
+function rgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
+}
+function arcRect(x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); }
+function ringRect(cx, cy, r, start, sweep, color, width) {
+  ctx.beginPath(); ctx.arc(cx, cy, r, start, sweep); ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke();
+}
+function guide(cx, cy, r) {
+  ctx.strokeStyle = rgba(highlight, .35); ctx.lineWidth = 2 * S; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.ellipse(cx, cy - r * .02, r * .32, r * .4, 0, 0, 7); ctx.stroke();
+  const ey = cy - r * .1;
+  ctx.beginPath(); ctx.ellipse(cx - r * .14, ey, r * .09, r * .06, 0, 0, 7);
+  ctx.ellipse(cx + r * .14, ey, r * .09, r * .06, 0, 0, 7);
+  ctx.ellipse(cx, cy + r * .13, r * .12, r * .08, 0, .35, Math.PI - .35); ctx.stroke();
+}
+function brackets(cx, cy, face, r) {
+  const c = r * .2, arm = r * .16, l = face.left, t = face.top, rr = face.right, b = face.bottom;
+  ctx.strokeStyle = rgba(accent, .55 + .45 * (.5 + .5 * Math.sin(phase * 6.283)));
+  ctx.lineWidth = 3 * S; ctx.lineCap = 'round';
+  const corner = (x, y, a0) => { ctx.beginPath(); ctx.arc(x, y, c, a0, a0 + Math.PI / 2); ctx.stroke(); };
+  corner(l + c, t + c, Math.PI); corner(rr - c, t + c, 1.5 * Math.PI);
+  corner(rr - c, b - c, 0); corner(l + c, b - c, Math.PI / 2);
+  ctx.beginPath();
+  ctx.moveTo(l, t + c); ctx.lineTo(l, t + c + arm);
+  ctx.moveTo(l + c, t); ctx.lineTo(l + c + arm, t);
+  ctx.moveTo(rr, t + c); ctx.lineTo(rr, t + c + arm);
+  ctx.moveTo(rr - c, t); ctx.lineTo(rr - c - arm, t);
+  ctx.moveTo(rr, b - c); ctx.lineTo(rr, b - c - arm);
+  ctx.moveTo(rr - c, b); ctx.lineTo(rr - c - arm, b);
+  ctx.moveTo(l, b - c); ctx.lineTo(l, b - c - arm);
+  ctx.moveTo(l + c, b); ctx.lineTo(l + c + arm, b);
+  ctx.stroke();
+}
+function hyperRings(cx, cy, r) {
+  for (let i = 0; i < 3; i++) {
+    const p = (phase + i / 3) % 1;
+    ctx.strokeStyle = rgba(accent, (1 - p) * .35); ctx.lineWidth = 2 * S;
+    arcRect(cx, cy, r * (.48 + p * .3)); ctx.stroke();
+  }
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(phase * 6.283); ctx.translate(-cx, -cy);
+  ctx.setLineDash([1 * S, 10 * S]); ctx.strokeStyle = highlight; ctx.lineWidth = 2 * S;
+  arcRect(cx, cy, r * .72); ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+}
+function scan(cx, cy, r, face) {
+  const band = r * .24, y = face.top + phase * (face.bottom - face.top);
+  const g = ctx.createLinearGradient(0, y - band, 0, y + band);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(.5, rgba(highlight, .7)); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save(); ctx.beginPath();
+  if (style === 'ios') ctx.roundRect(face.left, face.top, face.right - face.left, face.bottom - face.top, r * .18);
+  else ctx.arc(cx, cy, r * .72, 0, 7);
+  ctx.clip(); ctx.fillStyle = g; ctx.fillRect(face.left, y - band, face.right - face.left, band * 2); ctx.restore();
+}
+function check(cx, cy, r, p) {
+  const pts = [[cx - r * .22, cy], [cx - r * .05, cy + r * .15], [cx + r * .24, cy - r * .18]];
+  const dx = pts[1][0] - pts[0][0], dy = pts[1][1] - pts[0][1], len1 = Math.hypot(dx, dy);
+  const len2 = Math.hypot(pts[2][0] - pts[1][0], pts[2][1] - pts[1][1]), total = len1 + len2, d = total * p;
+  ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+  if (d < len1) ctx.lineTo(pts[0][0] + dx * d / len1, pts[0][1] + dy * d / len1);
+  else { ctx.lineTo(pts[1][0], pts[1][1]);
+    ctx.lineTo(pts[1][0] + (pts[2][0] - pts[1][0]) * (d - len1) / len2,
+               pts[1][1] + (pts[2][1] - pts[1][1]) * (d - len1) / len2); }
+  ctx.strokeStyle = successColor; ctx.lineWidth = 5 * S; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke();
+}
+function draw(now) {
+  const dt = Math.min(now - last, 50); last = now;
+  if (state === 'scanning') phase = (phase + dt / 2200) % 1;
+  if (state === 'success') successP = Math.min(1, successP + dt / 550);
+  if (state === 'error') errorP = Math.min(1, errorP + dt / 500);
+  shown += (progress - shown) * Math.min(1, dt / 90);
+  const cx = 360 * S, cy = 360 * S, r = 180 * S - 12 * S, half = r * .66;
+  const face = { left: cx - half, top: cy - half, right: cx + half, bottom: cy + half };
+  ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.save();
+  if (state === 'error') ctx.translate(Math.sin(errorP * 6 * Math.PI) * (1 - errorP) * 5 * S, 0);
+  ctx.strokeStyle = rgba(accent, .22); ctx.lineWidth = 3 * S; arcRect(cx, cy, r); ctx.stroke();
+  const active = state === 'success' ? successColor : state === 'error' ? errorColor : accent;
+  if (shown > 0) ringRect(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + shown * 3.6 * Math.PI / 180, active, 4 * S);
+  if (state === 'scanning') ringRect(cx, cy, r, -Math.PI / 2 + phase * 5.585, -Math.PI / 2 + phase * 5.585 + .454, highlight, 4 * S);
+  if (state === 'success') {
+    ctx.strokeStyle = rgba(successColor, .85 * successP); ctx.lineWidth = 4 * S; arcRect(cx, cy, r); ctx.stroke();
+    check(cx, cy, r, successP);
+  } else {
+    if (style === 'ios') brackets(cx, cy, face, r); else hyperRings(cx, cy, r);
+    guide(cx, cy, r);
+    if (state === 'scanning') scan(cx, cy, r, face);
+    if (state === 'error') {
+      ctx.strokeStyle = errorColor; ctx.lineWidth = 4 * S;
+      const d = r * .2; ctx.beginPath();
+      ctx.moveTo(cx - d, cy - d); ctx.lineTo(cx + d, cy + d);
+      ctx.moveTo(cx + d, cy - d); ctx.lineTo(cx - d, cy + d); ctx.stroke();
+    }
+  }
+  ctx.restore(); requestAnimationFrame(draw);
+}
+document.getElementById('style').onchange = e => style = e.target.value;
+document.getElementById('progress').oninput = e => { progress = +e.target.value; state = 'scanning'; };
+document.getElementById('scan').onclick = () => { state = 'scanning'; phase = 0; };
+document.getElementById('success').onclick = () => { state = 'success'; successP = 0; progress = 100; };
+document.getElementById('error').onclick = () => { state = 'error'; errorP = 0; };
+document.getElementById('reset').onclick = () => { state = 'scanning'; phase = 0; progress = 0; shown = 0; successP = 0; errorP = 0; document.getElementById('progress').value = 0; };
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>

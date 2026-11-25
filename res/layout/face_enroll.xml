@@ -28,19 +28,25 @@
                 android:layout_height="wrap_content"
                 android:orientation="vertical">
 
-                <LinearLayout
+                <FrameLayout
                     android:id="@+id/surface_view"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
+                    android:layout_width="240dip"
+                    android:layout_height="240dip"
                     android:layout_marginTop="48dp"
-                    android:gravity="center_horizontal">
+                    android:layout_gravity="center_horizontal">
 
                     <co.aospa.sense.view.CircleSurfaceView
                         android:id="@+id/camera_surface"
-                        android:layout_width="240.0dip"
-                        android:layout_height="320.0dip"
-                        android:background="#00000000" />
-                </LinearLayout>
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:background="@null" />
+
+                    <co.aospa.sense.view.FaceUnlockAnimationView
+                        android:id="@+id/face_animation"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:importantForAccessibility="yes" />
+                </FrameLayout>
 
                 <FrameLayout
                     android:layout_width="match_parent"

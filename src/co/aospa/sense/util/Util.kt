@@ -8,7 +8,8 @@ import java.lang.reflect.InvocationTargetException
 object Util {
     private const val TAG = "Sense:Utils"
 
-    const val IS_DEBUG_LOGGING = true
+    // Opt in with: adb shell setprop log.tag.Sense:Utils DEBUG
+    val IS_DEBUG_LOGGING: Boolean = Log.isLoggable(TAG, Log.DEBUG)
     private const val PROPERTY_FACEUNLOCK_AVAILABLE = "property_faceunlock_available"
 
     fun isFaceUnlockAvailable(context: Context?): Boolean {

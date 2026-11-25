@@ -3,6 +3,7 @@ package co.aospa.sense.activities
 import android.Manifest
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Resources
 import android.hardware.Camera
 import android.hardware.face.FaceManager
@@ -21,19 +22,18 @@ import co.aospa.sense.util.Constants
 import co.aospa.sense.util.PreferenceHelper
 import co.aospa.sense.util.Util
 import co.aospa.sense.view.CircleSurfaceView
+import co.aospa.sense.view.FaceUnlockAnimationView
 import com.google.android.setupdesign.GlifLayout
 import com.google.android.setupdesign.util.ThemeHelper
-
 
 open class EnrollActivity : FaceBaseActivity() {
 
     private var mEnrollController: FaceEnrollController? = null
-    private var mEnrollmentCancel = CancellationSignal()
+    private var mEnrollmentCancel: CancellationSignal? = null
     private var mFaceManager: FaceManager? = null
-    private var mHandler: Handler? = null
-    private var mHandlerThread: HandlerThread? = null
     private var mPreferenceHelper: PreferenceHelper? = null
     private var mSurfaceView: CircleSurfaceView? = null
+    private var mAnimationView: FaceUnlockAnimationView? = null
     private var mEnrollVendorMessage: TextView? = null
     private var mProgress = 0.0f
     private var mHasCameraPermission = false
@@ -54,10 +54,17 @@ open class EnrollActivity : FaceBaseActivity() {
                         R.string.unlock_failed_face_small
                     Constants.MSG_UNLOCK_FACE_SCALE_TOO_LARGE -> errorString =
                         R.string.unlock_failed_face_large
-                    Constants.MSG_UNLOCK_FACE_OFFSET_LEFT, Constants.MSG_UNLOCK_FACE_OFFSET_RIGHT, Constants.MSG_UNLOCK_FACE_ROTATED_LEFT, Constants.MSG_UNLOCK_FACE_ROTATED_RIGHT -> mProgress += 10.0f
+                    Constants.MSG_UNLOCK_FACE_OFFSET_LEFT,
+                    Constants.MSG_UNLOCK_FACE_OFFSET_RIGHT,
+                    Constants.MSG_UNLOCK_FACE_ROTATED_LEFT,
+                    Constants.MSG_UNLOCK_FACE_ROTATED_RIGHT -> {
+                        mProgress = (mProgress + 10.0f).coerceAtMost(100.0f)
+                        mEnrollVendorMessage?.text = ""
+                    }
                     Constants.MSG_UNLOCK_KEEP -> {
-                        mProgress += 10.0f
+                        mProgress = (mProgress + 10.0f).coerceAtMost(100.0f)
                         mIsFaceDetected = true
+                        mEnrollVendorMessage?.text = ""
                     }
                     Constants.MSG_UNLOCK_FACE_MULTI -> errorString =
                         R.string.unlock_failed_face_multi
@@ -68,16 +75,11 @@ open class EnrollActivity : FaceBaseActivity() {
                     Constants.MSG_UNLOCK_HIGHLIGHT -> errorString = R.string.attr_light_high
                     Constants.MSG_UNLOCK_HALF_SHADOW -> errorString = R.string.attr_light_shadow
                 }
-                if (mProgress < 100.0f) {
-                    if (mIsFaceDetected) {
-                        if (mProgress >= 60.0f) {
-                            mProgress = 60.0f
-                        }
-                        mSurfaceView!!.setProgress(mProgress)
-                    }
-                    if (errorString != 0) {
-                        mEnrollVendorMessage!!.setText(errorString)
-                    }
+                if (errorString != 0) {
+                    mEnrollVendorMessage?.setText(errorString)
+                } else if (mIsFaceDetected && mProgress < 100.0f) {
+                    // The vendor needs multiple captures; only surface the first 60% here.
+                    mAnimationView?.setProgress(minOf(mProgress, 60.0f))
                 }
             }
         }
@@ -88,25 +90,13 @@ open class EnrollActivity : FaceBaseActivity() {
                     startFinishActivity()
                     return
                 }
-                if (!mIsActivityPaused) {
-                    val intent = Intent()
-                    intent.setClass(this@EnrollActivity, TryAgainActivity::class.java)
-                    parseIntent(intent)
-                    startActivity(intent)
-                }
-                finish()
+                retryToEnroll()
             }
         }
 
         override fun onCameraError() {
             if (!isFinishing && !isDestroyed) {
-                if (!mIsActivityPaused) {
-                    val intent = Intent()
-                    intent.setClass(this@EnrollActivity, TryAgainActivity::class.java)
-                    parseIntent(intent)
-                    startActivity(intent)
-                }
-                finish()
+                retryToEnroll()
             }
         }
 
@@ -116,24 +106,25 @@ open class EnrollActivity : FaceBaseActivity() {
             vibrator.vibrate(CLICK_VIBRATION, SONIFICATION)
         }
     }
+
     private val mEnrollmentCallback: FaceManager.EnrollmentCallback =
         object : FaceManager.EnrollmentCallback() {
             override fun onEnrollmentProgress(progress: Int) {
                 if (progress == 0) {
                     runOnUiThread {
                         mProgress = 100.0f
-                        mSurfaceView!!.setProgress(mProgress)
-                        try {
-                            if (mEnrollVendorMessage != null) {
-                                mEnrollVendorMessage!!.text = ""
-                            }
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                val enrollActivity = this@EnrollActivity
-                                if (!enrollActivity.isDestroyed) {
-                                    startFinishActivity()
+                        mAnimationView?.setSuccess()
+                        mEnrollVendorMessage?.text = ""
+                        val activity = this@EnrollActivity
+                        val view = activity.mAnimationView
+                        if (view != null && !activity.isDestroyed) {
+                            view.postDelayed({
+                                if (!activity.isDestroyed && !activity.isFinishing) {
+                                    activity.startFinishActivity()
                                 }
-                            }, 2000)
-                        } catch (ignored: Exception) {
+                            }, SUCCESS_DELAY_MS)
+                        } else {
+                            activity.startFinishActivity()
                         }
                     }
                 }
@@ -142,23 +133,13 @@ open class EnrollActivity : FaceBaseActivity() {
             override fun onEnrollmentHelp(helpMessageId: Int, charSequence: CharSequence) {
                 runOnUiThread {
                     if (!TextUtils.isEmpty(charSequence)) {
-                        mEnrollVendorMessage!!.text = charSequence
+                        mEnrollVendorMessage?.text = charSequence
                     }
                 }
             }
 
             override fun onEnrollmentError(errorMessageId: Int, charSequence: CharSequence) {
-                if (!mIsActivityPaused) {
-                    val intent = Intent()
-                    intent.setClass(this@EnrollActivity, TryAgainActivity::class.java)
-                    if (errorMessageId != Constants.MSG_UNLOCK_FAILED) {
-                        parseIntent(intent)
-                    } else {
-                        setResult(-1)
-                    }
-                    startActivity(intent)
-                }
-                finish()
+                retryToEnroll(clearResult = errorMessageId == Constants.MSG_UNLOCK_FAILED)
             }
         }
 
@@ -200,26 +181,23 @@ open class EnrollActivity : FaceBaseActivity() {
         setHeaderText(R.string.face_enroll_title)
         getLayout().setDescriptionText(R.string.face_enroll_description)
         mSurfaceView = findViewById(R.id.camera_surface)
+        mAnimationView = findViewById(R.id.face_animation)
+        mEnrollVendorMessage = findViewById(R.id.face_vendor_message)
         mProgress = 0.0f
-        mSurfaceView?.setProgress(0.0f)
-        /**mSurfaceView.postDelayed(new Runnable() {
-         * @Override
-         * public void run() {
-         * if (mIsFaceDetected) {
-         * mProgress += 5.0f;
-         * }
-         * if (mProgress < 60.0f) {
-         * mSurfaceView.setProgress(mProgress);
-         * mSurfaceView.postDelayed(this, 500);
-         * }
-         * }
-         * }, 500); */
+        mIsFaceDetected = false
+        mAnimationView?.reset()
+        mAnimationView?.startScanning()
+
         if (mEnrollController == null) {
             mEnrollController = FaceEnrollController.instance
             mEnrollController?.setSurfaceHolder(mSurfaceView?.holder)
         }
+        // A CancellationSignal cannot be reused after cancel(), so create a fresh one on
+        // every (re)start; otherwise enroll() silently fails after a configuration change.
+        mEnrollmentCancel?.cancel()
+        mEnrollmentCancel = CancellationSignal()
         if (mToken != null && mToken!!.isNotEmpty()) {
-            mFaceManager!!.enroll(
+            mFaceManager?.enroll(
                 Util.getUserId(this),
                 mToken,
                 mEnrollmentCancel,
@@ -228,7 +206,6 @@ open class EnrollActivity : FaceBaseActivity() {
             )
         }
         mEnrollController!!.start(mCameraCallback, 15000)
-        mEnrollVendorMessage = findViewById(R.id.face_vendor_message)
     }
 
     override fun getLayout(): GlifLayout {
@@ -237,25 +214,21 @@ open class EnrollActivity : FaceBaseActivity() {
     }
 
     override fun onDestroy() {
+        if (Util.IS_DEBUG_LOGGING) Log.i(TAG, "onDestroy")
         super.onDestroy()
-        Log.i(TAG, "onDestroy")
-        if (mHandler != null) {
-            mHandler!!.post {
-                Log.i(TAG, "onDestroy handlerThread.quit()")
-                mHandlerThread!!.quit()
-            }
-        }
     }
 
     override fun onPause() {
         super.onPause()
         mIsActivityPaused = true
+        mAnimationView?.stopScanning()
         if (mEnrollController != null) {
             mEnrollController!!.setSurfaceHolder(null)
             mEnrollController!!.stop(mCameraCallback)
             mEnrollController = null
         }
-        mEnrollmentCancel.cancel()
+        mEnrollmentCancel?.cancel()
+        mEnrollmentCancel = null
     }
 
     override fun onResume() {
@@ -263,10 +236,31 @@ open class EnrollActivity : FaceBaseActivity() {
         mIsActivityPaused = false
         synchronized(this) {
             if (mHasCameraPermission) {
-                if (Util.IS_DEBUG_LOGGING) {
-                    Log.i(TAG, "onResume")
-                }
+                if (Util.IS_DEBUG_LOGGING) Log.i(TAG, "onResume")
                 init()
+            }
+        }
+    }
+
+    /** Brief error animation, then hand back to the retry screen. */
+    private fun retryToEnroll(clearResult: Boolean = false) {
+        runOnUiThread {
+            if (mIsActivityPaused || isFinishing || isDestroyed) return@runOnUiThread
+            if (clearResult) setResult(-1)
+            mAnimationView?.setError()
+            val navigate = Runnable {
+                if (isFinishing || isDestroyed) return@Runnable
+                val intent = Intent()
+                intent.setClass(this@EnrollActivity, TryAgainActivity::class.java)
+                parseIntent(intent)
+                startActivity(intent)
+                finish()
+            }
+            val view = mAnimationView
+            if (view != null) {
+                view.postDelayed(navigate, ERROR_DELAY_MS)
+            } else {
+                navigate.run()
             }
         }
     }
@@ -284,11 +278,6 @@ open class EnrollActivity : FaceBaseActivity() {
         )
         intent.component = enrollFinish
         startActivityForResult(intent, 1)
-    }
-
-    override fun onBackPressed() {
-        super.onBackPressed()
-        finish()
     }
 
     @Deprecated("Deprecated in Java")
@@ -315,19 +304,17 @@ open class EnrollActivity : FaceBaseActivity() {
         requestCode: Int, permissions: Array<String>,
         grantResults: IntArray
     ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 0) {
-            synchronized(this) { mHasCameraPermission = true }
-        } else if (!ActivityCompat.shouldShowRequestPermissionRationale(
-                this,
-                Manifest.permission.CAMERA
-            )
-        ) {
-            Toast.makeText(this@EnrollActivity, "Missing camera permission", Toast.LENGTH_SHORT)
-                .show()
-        } else {
-            finish()
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                synchronized(this) { mHasCameraPermission = true }
+            } else {
+                Toast.makeText(this, R.string.face_camera_permission_required, Toast.LENGTH_SHORT)
+                    .show()
+                finish()
+            }
+            return
         }
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
     }
 
     companion object {
@@ -336,5 +323,7 @@ open class EnrollActivity : FaceBaseActivity() {
         private val SONIFICATION = AudioAttributes.Builder()
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION).build()
+        private const val SUCCESS_DELAY_MS = 1600L
+        private const val ERROR_DELAY_MS = 650L
     }
 }

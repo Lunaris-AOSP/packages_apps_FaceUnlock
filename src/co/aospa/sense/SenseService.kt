@@ -25,6 +25,7 @@ import co.aospa.sense.vendor.Vendor
 import co.aospa.sense.vendor.VendorImpl
 
 import java.lang.StringBuilder
+import java.security.SecureRandom
 import java.util.*
 
 import vendor.aospa.biometrics.face.ISenseService
@@ -43,6 +44,8 @@ class SenseService : Service() {
     private var mService: SenseServiceWrapper? = null
     private var mVendorImpl: Vendor? = null
     private var mCameraId = 0
+    private var mCameraCallbackRegistered = false
+    private val mSecureRandom = SecureRandom()
     private var mChallengeCount = 0
     private var mUserId = 0
     private var mAuthenticationErrorCount = 0
@@ -86,7 +89,8 @@ class SenseService : Service() {
             override fun onCameraAvailable(cameraId: String) {
                 super.onCameraAvailable(cameraId)
                 if (mCameraId == cameraId.toInt() && mIsAuthenticated) {
-                    mCameraManager!!.unregisterAvailabilityCallback(this)
+                    mCameraManager?.unregisterAvailabilityCallback(this)
+                    mCameraCallbackRegistered = false
                     mIsAuthenticated = false
                     onAuthenticated()
                 }
@@ -141,7 +145,6 @@ class SenseService : Service() {
                             )
                         )
                     }
-                    stopAuthentication()
                 } catch (e: RemoteException) {
                     e.printStackTrace()
                 }
@@ -283,12 +286,22 @@ class SenseService : Service() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         if (Util.IS_DEBUG_LOGGING) {
             Log.d(TAG, "onDestroy")
         }
-        mVendorImpl!!.release()
-        unregisterReceiver(mReceiver)
+        stopCurrentWork()
+        if (mCameraCallbackRegistered) {
+            mCameraManager?.unregisterAvailabilityCallback(mCameraAvailabilityCallback)
+            mCameraCallbackRegistered = false
+        }
+        try {
+            unregisterReceiver(mReceiver)
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "Receiver was not registered", e)
+        }
+        mVendorImpl?.release()
+        mSenseReceiver = null
+        super.onDestroy()
     }
 
     private fun onAuthenticated() {
@@ -318,8 +331,13 @@ class SenseService : Service() {
         synchronized(this) {
             mCameraAuthController?.stop()
             mCameraAuthController = null
+            mIsAuthenticated = false
         }
-        mVendorImpl!!.compareStop()
+        if (mCameraCallbackRegistered) {
+            mCameraManager?.unregisterAvailabilityCallback(mCameraAvailabilityCallback)
+            mCameraCallbackRegistered = false
+        }
+        mVendorImpl?.compareStop()
     }
 
     private fun stopCurrentWork() {
@@ -400,9 +418,8 @@ class SenseService : Service() {
     }
 
     private fun updateTimersAndLockout() {
-        if (mPreferenceHelper!!.getIntValueByKey(Constants.SHARED_KEY_FACE_ID) > -1 && !mUserUnlocked) {
+        if (Util.isFaceUnlockEnrolled(this) && !mUserUnlocked) {
             if (!mOnIdleTimer) {
-                cancelIdleTimer()
                 startIdleTimer()
             }
         } else {
@@ -487,7 +504,10 @@ class SenseService : Service() {
         }
 
         override fun authenticate(operationId: Long) {
-            mCameraManager!!.registerAvailabilityCallback(mCameraAvailabilityCallback, mWorkHandler)
+            if (!mCameraCallbackRegistered) {
+                mCameraManager?.registerAvailabilityCallback(mCameraAvailabilityCallback, mWorkHandler)
+                mCameraCallbackRegistered = true
+            }
             if (Util.IS_DEBUG_LOGGING) Log.d(TAG, "authenticate")
             if (!Util.isFaceUnlockAvailable(this@SenseService) ||
                 ContextCompat.checkSelfPermission(
@@ -579,7 +599,7 @@ class SenseService : Service() {
         override fun generateChallenge(timeout: Int): Long {
             if (Util.IS_DEBUG_LOGGING) Log.d(TAG, "generateChallenge + $timeout")
             if (mChallengeCount <= 0 || mChallenge == 0L) {
-                mChallenge = Random().nextLong()
+                mChallenge = mSecureRandom.nextLong()
             }
             mChallengeCount += 1
             mWorkHandler!!.removeMessages(MSG_CHALLENGE_TIMEOUT)

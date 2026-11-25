@@ -2,4 +2,7 @@
 <resources>
     <bool name="config_suc_use_partner_resource">true</bool>
     <bool name="theme_is_light">true</bool>
+
+    <!-- true: iOS Face ID style scan brackets; false: HyperOS-style pulsing rings -->
+    <bool name="config_face_scan_style_ios">true</bool>
 </resources>

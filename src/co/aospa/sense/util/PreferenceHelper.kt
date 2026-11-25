@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.preference.PreferenceManager
 import android.text.TextUtils
+import android.util.Base64
 
 class PreferenceHelper(context: Context) {
 
@@ -51,16 +52,25 @@ class PreferenceHelper(context: Context) {
 
     @SuppressLint("ApplySharedPref")
     fun saveByteArrayValue(key: String?, value: ByteArray?) {
+        val bytes = value ?: ByteArray(0)
         val edit = PreferenceManager.getDefaultSharedPreferences(mContext).edit()
-        edit.putString(key, String(value!!))
+        // String(bytes) mangles non-UTF-8 bytes, which corrupts the enrollment token.
+        edit.putString(
+            key,
+            BASE64_PREFIX + Base64.encodeToString(bytes, Base64.NO_WRAP)
+        )
         edit.commit()
     }
 
     fun getByteArrayValueByKey(key: String?): ByteArray? {
         val string = PreferenceManager.getDefaultSharedPreferences(mContext).getString(key, null)
-        return if (TextUtils.isEmpty(string)) {
-            null
-        } else string!!.toByteArray()
+        if (TextUtils.isEmpty(string)) return null
+        return if (string!!.startsWith(BASE64_PREFIX)) {
+            Base64.decode(string.substring(BASE64_PREFIX.length), Base64.NO_WRAP)
+        } else {
+            // Tokens written by older versions were stored as a raw String.
+            string.toByteArray()
+        }
     }
 
     fun getBooleanValueByKey(key: String?): Boolean {
@@ -69,5 +79,9 @@ class PreferenceHelper(context: Context) {
 
     init {
         mContext = context.applicationContext
+    }
+
+    companion object {
+        private const val BASE64_PREFIX = "b64:"
     }
 }
